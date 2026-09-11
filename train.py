@@ -469,11 +469,25 @@ class MemeDataset(Dataset):
             proc_p = processor(text=[prefix], images=[img], return_tensors="pt")
             prompt_len = proc_p["input_ids"].shape[1]
             proc_full = processor(text=[full_text], images=[img], return_tensors="pt")
-            item = {k: v.squeeze(0) for k, v in proc_full.items()}
+            item = {}
+            for k, v in proc_full.items():
+                if k in ("input_ids", "attention_mask"):
+                    item[k] = v.squeeze(0)
+                elif k == "image_grid_thw":
+                    item[k] = v if v.dim() == 2 else v.view(-1, 3)
+                else:
+                    item[k] = v.squeeze(0) if v.dim() > 2 else v
             item["prompt_len"] = prompt_len
         else:
             proc = processor(text=[prefix], images=[img], return_tensors="pt")
-            item = {k: v.squeeze(0) for k, v in proc.items()}
+            item = {}
+            for k, v in proc.items():
+                if k in ("input_ids", "attention_mask"):
+                    item[k] = v.squeeze(0)
+                elif k == "image_grid_thw":
+                    item[k] = v if v.dim() == 2 else v.view(-1, 3)
+                else:
+                    item[k] = v.squeeze(0) if v.dim() > 2 else v
         item["row_index"] = idx
         item["label_id"] = int(r["label_id"])
         return item
@@ -498,7 +512,14 @@ def collate(batch):
         out["labels"] = labels
     for k in VISUAL_KEYS:
         if k in batch[0]:
-            out[k] = torch.cat([b[k] for b in batch], dim=0)
+            tensors = [b[k] for b in batch]
+            if k == "image_grid_thw":
+                tensors = [t.view(-1, 3) if t.dim() < 2 else t for t in tensors]
+                out[k] = torch.cat(tensors, dim=0)
+            elif k == "pixel_values":
+                out[k] = torch.cat(tensors, dim=0)
+            else:
+                out[k] = torch.cat(tensors, dim=0)
     out["row_index"] = torch.tensor([b["row_index"] for b in batch])
     out["label_id"] = torch.tensor([b["label_id"] for b in batch])
     return out
