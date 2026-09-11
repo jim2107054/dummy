@@ -507,12 +507,21 @@ def collate(batch):
 BF16_OK = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
 COMPUTE_DTYPE = torch.bfloat16 if BF16_OK else torch.float16
 TOTAL_VRAM = torch.cuda.get_device_properties(0).total_memory / 1024**3 if torch.cuda.is_available() else 0.0
-USE_4BIT = bool(TOTAL_VRAM and TOTAL_VRAM < 15.5)
+
+HAS_BNB = False
+try:
+    import bitsandbytes
+    HAS_BNB = True
+except Exception:
+    pass
+
+USE_4BIT = bool(HAS_BNB and TOTAL_VRAM and TOTAL_VRAM < 15.5)
+print(f"GPU VRAM: {TOTAL_VRAM:.1f} GiB | Compute Dtype: {COMPUTE_DTYPE} | BitsAndBytes Available: {HAS_BNB} | Use 4-Bit: {USE_4BIT}")
 
 def load_base_model():
     kwargs = dict(dtype=COMPUTE_DTYPE, device_map="auto" if torch.cuda.is_available() else None,
                   trust_remote_code=True, attn_implementation=CONFIG["attn_implementation"])
-    if USE_4BIT and torch.cuda.is_available():
+    if USE_4BIT and HAS_BNB and torch.cuda.is_available():
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=COMPUTE_DTYPE, bnb_4bit_use_double_quant=True)
@@ -520,8 +529,9 @@ def load_base_model():
         ("Qwen2_5_VLForConditionalGeneration", lambda: getattr(transformers, "Qwen2_5_VLForConditionalGeneration", None)),
         ("Qwen2VLForConditionalGeneration", lambda: getattr(transformers, "Qwen2VLForConditionalGeneration", None)),
         ("Qwen3VLForConditionalGeneration", lambda: getattr(transformers, "Qwen3VLForConditionalGeneration", None)),
-        ("AutoModelForImageTextToText", lambda: transformers.AutoModelForImageTextToText),
-        ("AutoModelForVision2Seq", lambda: transformers.AutoModelForVision2Seq),
+        ("AutoModelForImageTextToText", lambda: getattr(transformers, "AutoModelForImageTextToText", None)),
+        ("AutoModelForVision2Seq", lambda: getattr(transformers, "AutoModelForVision2Seq", None)),
+        ("AutoModelForCausalLM", lambda: getattr(transformers, "AutoModelForCausalLM", None)),
     ]
     for name, get_cls in loaders:
         cls = get_cls()
