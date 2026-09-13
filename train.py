@@ -581,6 +581,15 @@ lora_cfg = LoraConfig(
     target_modules=CONFIG["lora"]["target_modules"],
     task_type=TaskType.CAUSAL_LM,
 )
+# Patch torchao check in PEFT to avoid version conflict on Kaggle
+try:
+    import peft.import_utils
+    peft.import_utils.is_torchao_available = lambda: False
+    import peft.tuners.lora.torchao
+    peft.tuners.lora.torchao.is_torchao_available = lambda: False
+except Exception:
+    pass
+
 model = get_peft_model(base_model, lora_cfg)
 if CONFIG["train"]["gradient_checkpointing"] and torch.cuda.is_available():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
