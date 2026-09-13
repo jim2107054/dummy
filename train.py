@@ -16,7 +16,7 @@ warnings.filterwarnings("ignore")
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Qwen-VL LoRA for Bangla Meme Classification")
     parser.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct", help="Hugging Face Model ID or local path")
-    parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
+    parser.add_argument("--epochs", type=int, default=5, help="Training epochs")
     parser.add_argument("--batch_size", type=int, default=1, help="Per device batch size")
     parser.add_argument("--grad_accum", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -596,23 +596,47 @@ FAST_SCORING = len(set(FIRST_TOKENS)) == NUM_CLASSES
 FIRST_TOKEN_TENSOR = torch.tensor(FIRST_TOKENS, dtype=torch.long, device=DEVICE)
 
 @torch.no_grad()
-def score_dataframe(df):
+def score_dataframe(df, return_loss=False):
     model.eval()
     dl = DataLoader(MemeDataset(df, train=False, with_answer=False),
                     batch_size=CONFIG["train"]["eval_batch_images"], shuffle=False,
                     num_workers=2 if torch.cuda.is_available() else 0, collate_fn=collate)
     all_probs = []
+    tot_loss, n_samples = 0.0, 0
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="sum")
+    
     for batch in dl:
         inputs = {k: v.to(DEVICE) for k, v in batch.items() if k not in ("row_index", "label_id")}
         with torch.autocast("cuda", dtype=COMPUTE_DTYPE, enabled=torch.cuda.is_available()):
             out = model(**inputs, output_hidden_states=False, use_cache=False)
-        last_logits = out.logits[:, -1, :].float()
+        
+        attn_mask = inputs["attention_mask"]
+        seq_lens = (attn_mask.sum(dim=1) - 1).clamp(min=0)
+        batch_idx = torch.arange(len(seq_lens), device=DEVICE)
+        last_logits = out.logits[batch_idx, seq_lens, :].float()
+        
         scores = last_logits[:, FIRST_TOKEN_TENSOR]
-        probs = torch.softmax(scores, dim=-1).cpu()
-        all_probs.append(probs)
+        probs = torch.softmax(scores, dim=-1)
+        probs = torch.nan_to_num(probs, nan=1.0 / NUM_CLASSES, posinf=1.0, neginf=0.0)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+        all_probs.append(probs.cpu())
+        
+        if return_loss and "label_id" in batch:
+            target_ids = batch["label_id"].to(DEVICE)
+            loss_val = loss_fn(scores, target_ids)
+            tot_loss += float(loss_val.item())
+            n_samples += len(target_ids)
+            
         del out, inputs
+        
     probs = torch.cat(all_probs, dim=0).numpy()
-    preds = probs.argmax(1)
+    probs = np.nan_to_num(probs, nan=1.0 / NUM_CLASSES, posinf=1.0, neginf=0.0)
+    probs = probs / np.clip(probs.sum(axis=1, keepdims=True), 1e-9, None)
+    preds = probs.argmax(axis=1)
+    
+    if return_loss:
+        mean_val_loss = tot_loss / max(n_samples, 1)
+        return probs, preds, mean_val_loss
     return probs, preds
 
 # ----------------- Training Loop -----------------
